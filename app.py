@@ -9,7 +9,7 @@ st.set_page_config(page_title="Arte Criativa - Gestão", layout="wide")
 url = "https://docs.google.com/spreadsheets/d/13Qqqr2IgjZKsUzGSEBcZl3OWWeXc4NIW0QoWw2X4ktE/edit?usp=sharing"
 
 conn = st.connection("gsheets", type=GSheetsConnection)
-df = conn.read(spreadsheet=url)
+df_raw = conn.read(spreadsheet=url)
 
 # Função para limpar os valores
 def limpar_valor(val):
@@ -17,6 +17,9 @@ def limpar_valor(val):
     val_str = str(val).replace('R$', '').replace(' ', '').replace('.', '').replace(',', '.')
     try: return float(val_str)
     except: return 0.0
+
+# LIMPEZA CRÍTICA: Remove linhas onde a Descrição ou Data estão vazias
+df = df_raw.dropna(subset=['Data', 'Descrição'], how='all').copy()
 
 if not df.empty:
     df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
@@ -27,15 +30,13 @@ if not df.empty:
 
 st.markdown("<h1 style='color: #00ffcc;'>📊 Painel de Controle - Arte Criativa</h1>", unsafe_allow_html=True)
 
-# --- INFORMAÇÕES SUPERIORES (COMO ESTAVA ANTES) ---
+# --- INFORMAÇÕES SUPERIORES ---
 if not df.empty:
-    # Mostra o total GERAL ou do MÊS ATUAL por padrão no topo
     mes_atual = datetime.now().month
     ano_atual = datetime.now().year
-    
     df_topo = df[(df['Mes'] == mes_atual) & (df['Ano'] == ano_atual)]
     
-    # Se o mês atual estiver vazio, mostra o total geral para não ficar zerado
+    # Se não tiver nada no mês, mostra o acumulado total
     if df_topo.empty:
         df_topo = df
 
@@ -49,7 +50,7 @@ if not df.empty:
 
 st.divider()
 
-# --- FORMULÁRIO DE CADASTRO NO MEIO ---
+# --- NOVO LANÇAMENTO ---
 st.subheader("➕ Novo Lançamento")
 with st.form("add", clear_on_submit=True):
     col1, col2 = st.columns(2)
@@ -61,43 +62,39 @@ with st.form("add", clear_on_submit=True):
         t = st.selectbox("Tipo", ["Entrada", "Saída"])
     if st.form_submit_button("Salvar no Sistema"):
         nova = pd.DataFrame([{"Data": d.strftime("%Y/%m/%d"), "Descrição": desc, "Tipo": t, "Valor": v, "Status": "Pago"}])
-        conn.update(spreadsheet=url, data=pd.concat([df.drop(columns=['Mes', 'Ano']), nova], ignore_index=True))
-        st.success("Salvo!")
+        # Limpa o df_raw antes de salvar para não acumular lixo
+        df_limpo_para_salvar = df_raw.dropna(subset=['Data', 'Descrição'], how='all')
+        conn.update(spreadsheet=url, data=pd.concat([df_limpo_para_salvar, nova], ignore_index=True))
+        st.success("Salvo com sucesso!")
         st.rerun()
 
 st.divider()
 
-# --- HISTÓRICO ---
+# --- HISTÓRICO REAL (Sem linhas vazias) ---
 st.subheader("📝 Histórico Recente")
-st.dataframe(df.drop(columns=['Mes', 'Ano']).tail(10), use_container_width=True)
+if not df.empty:
+    # Mostra os últimos 10 registros REAIS (que não são None)
+    st.dataframe(df.drop(columns=['Mes', 'Ano']).tail(10), use_container_width=True)
+else:
+    st.write("Nenhum registro encontrado.")
 
 st.divider()
 
-# --- FERRAMENTAS DE CONSULTA NO FINAL DO APP ---
+# --- CONSULTA NO FINAL ---
 with st.expander("🔍 Consultar outros meses e Fechamento"):
     meses_nome = {1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril", 5: "Maio", 6: "Junho", 
                   7: "Julho", 8: "Agosto", 9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro"}
     
     c_m, c_a = st.columns(2)
     with c_m:
-        m_sel = st.selectbox("Escolha o Mês", options=list(meses_nome.keys()), format_func=lambda x: meses_nome[x], index=datetime.now().month - 1)
+        m_sel = st.selectbox("Mês", options=list(meses_nome.keys()), format_func=lambda x: meses_nome[x], index=datetime.now().month - 1)
     with c_a:
-        anos_disponiveis = sorted(df['Ano'].dropna().unique().astype(int).tolist())
-        if not anos_disponiveis: anos_disponiveis = [datetime.now().year]
-        a_sel = st.selectbox("Escolha o Ano", options=anos_disponiveis, index=len(anos_disponiveis)-1)
+        anos_list = sorted(df['Ano'].dropna().unique().astype(int).tolist()) if not df.empty else [datetime.now().year]
+        a_sel = st.selectbox("Ano", options=anos_list, index=len(anos_list)-1)
     
     df_f = df[(df['Mes'] == m_sel) & (df['Ano'] == a_sel)]
-    rec_f = df_f[df_f['Tipo'].str.contains('Entrada', case=False, na=False)]['Valor'].sum()
-    des_f = df_f[df_f['Tipo'].str.contains('Saíd|Said', case=False, na=False)]['Valor'].sum()
-    
-    st.write(f"**Resumo de {meses_nome[m_sel]}:** Entradas R$ {rec_f:.2f} | Saídas R$ {des_f:.2f} | **Saldo: R$ {rec_f-des_f:.2f}**")
-    
-    if st.button("Ver Tabela Anual Completa"):
-        resumo_anual = []
-        for m in range(1, 13):
-            temp_df = df[(df['Mes'] == m) & (df['Ano'] == a_sel)]
-            ent = temp_df[temp_df['Tipo'].str.contains('Entrada', case=False, na=False)]['Valor'].sum()
-            sai = temp_df[temp_df['Tipo'].str.contains('Saíd|Said', case=False, na=False)]['Valor'].sum()
-            resumo_anual.append({"Mês": meses_nome[m], "Saldo": ent - sai})
-        st.table(pd.DataFrame(resumo_anual))
+    if not df_f.empty:
+        rec_f = df_f[df_f['Tipo'].str.contains('Entrada', case=False, na=False)]['Valor'].sum()
+        des_f = df_f[df_f['Tipo'].str.contains('Saíd|Said', case=False, na=False)]['Valor'].sum()
+        st.info(f"**{meses_nome[m_sel]}/{a_sel}:** Saldo de R$ {rec_f-des_f:.2f}")
         
