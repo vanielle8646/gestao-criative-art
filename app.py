@@ -5,37 +5,43 @@ from datetime import datetime
 
 st.set_page_config(page_title="Arte Criativa - Gestão", layout="wide")
 
-# URL da planilha
 url = "https://docs.google.com/spreadsheets/d/13Qqqr2IgjZKsUzGSEBcZl3OWWeXc4NIW0QoWw2X4ktE/edit?usp=sharing"
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Função para ler os dados ignorando lixo
-def carregar():
-    dados = conn.read(spreadsheet=url, ttl=0)
-    if dados is not None:
-        return dados.dropna(subset=['Data', 'Descrição'], how='all').copy()
-    return pd.DataFrame()
+def carregar_e_limpar():
+    # Lê todos os dados
+    df_raw = conn.read(spreadsheet=url, ttl=0)
+    
+    if df_raw is not None and not df_raw.empty:
+        # Garante que os nomes das colunas não tenham espaços invisíveis
+        df_raw.columns = [str(c).strip() for c in df_raw.columns]
+        
+        # Filtra para manter apenas linhas que tenham Data E Descrição preenchidos
+        # Isso remove aquelas linhas que só tem "Pago" no Status
+        df_limpo = df_raw.dropna(subset=['Data', 'Descrição'], how='any').copy()
+        return df_limpo
+    return pd.DataFrame(columns=["Data", "Descrição", "Tipo", "Valor", "Status"])
 
-df = carregar()
+df = carregar_e_limpar()
 
-def limpar_v(val):
-    if pd.isna(val): return 0.0
-    s = str(val).replace('R$', '').replace(' ', '').replace('.', '').replace(',', '.')
+def formatar_moeda(val):
+    if pd.isna(val) or val == "": return 0.0
+    if isinstance(val, (int, float)): return float(val)
+    s = str(val).replace('R$', '').replace('.', '').replace(',', '.').strip()
     try: return float(s)
     except: return 0.0
 
 st.markdown("<h1 style='color: #00ffcc;'>📊 Painel de Controle - Arte Criativa</h1>", unsafe_allow_html=True)
 
-# --- RESUMO DO MÊS ---
-if not df.empty:
+# Só prossegue se a coluna 'Valor' existir após a limpeza
+if 'Valor' in df.columns:
+    df['V_num'] = df['Valor'].apply(formatar_moeda)
     df['Data_dt'] = pd.to_datetime(df['Data'], errors='coerce')
-    df['V_num'] = df['Valor'].apply(limpar_v)
     
+    # Resumo do Mês
     hoje = datetime.now()
     df_mes = df[(df['Data_dt'].dt.month == hoje.month) & (df['Data_dt'].dt.year == hoje.year)]
-    
-    if df_mes.empty: df_mes = df # Se o mês tá vazio, mostra o total
     
     ent = df_mes[df_mes['Tipo'].str.contains('Entrada', case=False, na=False)]['V_num'].sum()
     sai = df_mes[df_mes['Tipo'].str.contains('Saíd|Said', case=False, na=False)]['V_num'].sum()
@@ -44,12 +50,14 @@ if not df.empty:
     c1.metric("Receitas", f"R$ {ent:,.2f}")
     c2.metric("Despesas", f"R$ {sai:,.2f}")
     c3.metric("Saldo", f"R$ {ent-sai:,.2f}")
+else:
+    st.error("Coluna 'Valor' não encontrada. Verifique o cabeçalho da sua planilha.")
 
 st.divider()
 
-# --- FORMULÁRIO DE LANÇAMENTO ---
+# --- FORMULÁRIO ---
 st.subheader("➕ Novo Lançamento")
-with st.form("meu_form", clear_on_submit=True):
+with st.form("form_criative", clear_on_submit=True):
     col1, col2 = st.columns(2)
     with col1:
         data_f = st.date_input("Data", datetime.now())
@@ -60,8 +68,7 @@ with st.form("meu_form", clear_on_submit=True):
     
     if st.form_submit_button("Salvar no Sistema"):
         if desc_f and val_f > 0:
-            # Prepara a nova linha exatamente com as colunas da planilha
-            nova = pd.DataFrame([{
+            nova_linha = pd.DataFrame([{
                 "Data": data_f.strftime("%Y/%m/%d"),
                 "Descrição": desc_f,
                 "Tipo": tipo_f,
@@ -69,22 +76,19 @@ with st.form("meu_form", clear_on_submit=True):
                 "Status": "Pago"
             }])
             
-            # Pega o que já existe (sem as colunas temporárias de cálculo)
-            df_atual = df[['Data', 'Descrição', 'Tipo', 'Valor', 'Status']].copy()
-            df_final = pd.concat([df_atual, nova], ignore_index=True)
+            # Pega os dados atuais sem as colunas de cálculo
+            colunas_originais = ["Data", "Descrição", "Tipo", "Valor", "Status"]
+            df_para_salvar = pd.concat([df[colunas_originais], nova_linha], ignore_index=True)
             
-            # TENTA GRAVAR
             try:
-                conn.update(spreadsheet=url, data=df_final)
-                st.success("Salvo com sucesso! Atualizando...")
+                conn.update(spreadsheet=url, data=df_para_salvar)
+                st.success("Lançamento realizado com sucesso!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Erro ao gravar: Verifique se a planilha está como 'Editor' para todos com o link.")
+                st.error("Erro ao salvar. Verifique se a planilha está como 'Editor' para qualquer pessoa com o link.")
         else:
-            st.warning("Preencha a descrição e o valor!")
+            st.warning("Preencha todos os campos obrigatórios.")
 
 st.divider()
-st.subheader("📝 Histórico")
-if not df.empty:
-    st.dataframe(df[['Data', 'Descrição', 'Tipo', 'Valor', 'Status']].tail(10), use_container_width=True)
-    
+st.subheader("📝 Histórico Recente")
+st.dataframe(df[["Data", "Descrição", "Tipo", "Valor", "Status"]].tail(10), use_container_width=True)
