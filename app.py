@@ -4,13 +4,21 @@ from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Arte Criativa - Gestão", layout="wide")
 
+# Link da sua planilha
 url = "https://docs.google.com/spreadsheets/d/13Qqqr2IgjZKsUzGSEBcZl3OWWeXc4NIW0QoWw2X4ktE/edit?usp=sharing"
 
+# Conectar e ler
 conn = st.connection("gsheets", type=GSheetsConnection)
 df = conn.read(spreadsheet=url)
 
+# Limpeza dos dados: Remove R$ e converte para número
+if not df.empty:
+    df['Valor'] = df['Valor'].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+    df['Valor'] = pd.to_numeric(df['Valor'], errors='coerce').fillna(0)
+
 st.markdown("<h1 style='color: #00ffcc;'>📊 Painel de Controle - Arte Criativa</h1>", unsafe_allow_html=True)
 
+# Formulário de Cadastro
 with st.sidebar:
     st.header("Novo Registro")
     with st.form("add_registro", clear_on_submit=True):
@@ -28,11 +36,14 @@ with st.sidebar:
         st.success("Sincronizado!")
         st.rerun()
 
+# Exibição dos Totais
 if not df.empty:
     receitas = df[df['Tipo'] == 'Entrada']['Valor'].sum()
     despesas = df[df['Tipo'] == 'Saída']['Valor'].sum()
-    st.columns(3)[0].metric("Receitas", f"R$ {receitas:,.2f}")
-    st.columns(3)[1].metric("Despesas", f"R$ {despesas:,.2f}")
-    st.columns(3)[2].metric("Saldo", f"R$ {receitas-despesas:,.2f}")
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Receitas", f"R$ {receitas:,.2f}")
+    c2.metric("Despesas", f"R$ {despesas:,.2f}")
+    c3.metric("Saldo", f"R$ {receitas-despesas:,.2f}")
 
 st.dataframe(df, use_container_width=True)
